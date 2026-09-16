@@ -1,5 +1,59 @@
 # Changelog
 
+## Fase 9 — Métricas, oleada A (2026-09-16)
+
+`app/(app)/metricas/page.tsx` monta la pantalla completa de métricas: la cabecera fija de 7.1 (tres
+`KpiCard` —Facturación del mes, Facturación del trimestre y Beneficio neto del mes—), el bloque de
+ancho completo "Pagos pendientes" (cliente · proyecto · importe · fecha · días de retraso, con el
+nombre del cliente enlazando a `/proyectos/[id]` y badge en `--negative` para los vencidos) y las
+pestañas Rentabilidad · Cobros. Toda la infraestructura reutilizable de 7.6 queda construida en
+`components/metrics/`: `KpiCard` (con `size="large"`), `ChartCard`, `MetricsDataTable` (ordenable por
+todas las columnas, con formateadores de moneda/horas/porcentaje y barras embebidas) y
+`PeriodSelector` (Mes / Trimestre / Año / Todo con estado en la URL), más los envoltorios de
+`charts/` con el tema oscuro aplicado (`HorizontalBarChart`, `GroupedBarChart`, `StackedBarChart`,
+`CashflowChart`, `theme.tsx`). `lib/queries/metrics.ts` expone una función por métrica (M1–M7)
+apoyada en las vistas `v_project_totals`, `v_payments`, `v_receivables_aging` y `v_monthly_cash`,
+usando `cache()` de React para no repetir la consulta base dentro de una misma petición. `npm run
+build` y `npm run lint` pasan sin errores ni advertencias.
+
+### Decisiones de implementación
+
+- **El selector de periodo afecta a las métricas de rentabilidad (M1–M4, M7)** acotando los
+  proyectos por `created_at` dentro del mes/trimestre/año en curso (Mes / Trimestre / Año); "Todo" no
+  acota. Vive en `?periodo=` para sobrevivir a la recarga y lo comparten todas esas métricas. M5
+  (aging) y M6 (previsión) están ancladas a `current_date` por definición (deuda y caja de hoy) y no
+  se recortan por periodo; las tres tarjetas de cabecera también son fijas por su propio texto.
+- **M1 usa la media ponderada real**: `Σ margin_eur / Σ hours_total` (no la media simple de
+  `eur_per_hour`), tal como exige "media ponderada". La línea de referencia se dibuja con
+  `ReferenceLine` punteada en `target_hourly_rate` y las barras por debajo se pintan en `--negative`.
+- **M3 usa eje doble** en las barras agrupadas (€/h en el eje izquierdo, margen % en el derecho) para
+  que dos magnitudes de escala muy distinta se lean bien; se calculan media y mediana (7.2), se
+  muestra la media y se marca el nivel con menos de 2 proyectos.
+- **M5 destaca como "mayor deudor" la fila de mayor importe** (no la de más días), y rellena los tres
+  tramos aunque `v_receivables_aging` no devuelva alguno.
+- **M6 agrupa por semana ISO (lunes) calculada en UTC** sobre la fecha corta, evitando desplazamientos
+  por zona horaria, y rotula el eje X con la fecha de inicio de semana. Solo incluye pagos pendientes
+  entre hoy y hoy + 90 días.
+- **La cabecera lee `v_monthly_cash`**: Postgres ya agrega cobrado, tokens de tareas cerradas, gastos
+  de proyecto y gastos generales. El trimestre suma los tres meses naturales en curso. Nada de
+  agregar en JavaScript lo que puede agregar Postgres (9.6).
+- **Estados vacíos literales de 9.7** ("Crea tu primer proyecto para empezar a medir.", "Registra el
+  tiempo de tus tareas para calcular el €/hora.", "Define tu tarifa objetivo en Ajustes para
+  comparar.") centralizados en `ChartCard`, que también expone `loading` para futuras fases.
+
+### Verificación
+
+- `npm run build` y `npm run lint` sin errores ni advertencias de TypeScript.
+- Render real de `/metricas` (servidor de desarrollo, con `/metricas` añadido temporalmente a las
+  rutas públicas y revertido después): HTTP 200 mostrando la cabecera, "Pagos pendientes",
+  "Rentabilidad", "Cobros" y los estados vacíos de M1 ("Crea tu primer proyecto para empezar a
+  medir.") y del bloque de pagos; sin errores de servidor.
+- Verificación a mano en SQL de la cabecera y las métricas contra la base real: `v_monthly_cash`
+  devuelve cobrado 0,00 € y beneficio neto −10,00 € para 2026-09 (0 − 10 de tokens − 0 − 0); el
+  trimestre T3 suma 0,00 €; `v_receivables_aging` clasifica el único pago vencido en "0-30"
+  (100,00 €); `v_project_totals` da €/h 990,00 y margen 99,00 % para el proyecto "pautados"; M6
+  encuentra 3 pagos pendientes entre hoy y hoy + 90 días (180+180+180 = 540,00 €).
+
 ## Fase 8 — Home (2026-09-16)
 
 Pantalla de entrada con los cuatro bloques exigidos (8.1): `app/(app)/page.tsx` monta la rejilla

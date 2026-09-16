@@ -15,12 +15,15 @@ export function KpiCard({
   value,
   delta,
   footnote,
+  size = "default",
   className,
 }: {
   label: string;
   value: ReactNode;
   delta?: KpiDelta;
   footnote?: ReactNode;
+  /** "large" para los KPI protagonistas (40 px), por defecto 28 px. */
+  size?: "default" | "large";
   className?: string;
 }) {
   const deltaTone =
@@ -35,7 +38,12 @@ export function KpiCard({
       <p className="text-[11px] font-medium tracking-wide text-muted uppercase">
         {label}
       </p>
-      <div className="num mt-2 font-display text-[28px] leading-none font-semibold tracking-[-0.02em] text-primary">
+      <div
+        className={cn(
+          "num mt-2 font-display leading-none font-semibold tracking-[-0.02em] text-primary",
+          size === "large" ? "text-[40px]" : "text-[28px]",
+        )}
+      >
         {value}
       </div>
       {delta ? (
