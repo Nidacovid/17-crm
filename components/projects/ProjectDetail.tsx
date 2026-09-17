@@ -245,7 +245,7 @@ export function ProjectDetail({
             onClick={() => setArchiveOpen(true)}
           >
             <Trash2 aria-hidden strokeWidth={1.5} />
-            Eliminar proyecto
+            Eliminar
           </Button>
         }
         title={

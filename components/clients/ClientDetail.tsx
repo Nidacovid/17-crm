@@ -163,7 +163,7 @@ export function ClientDetail({
             onClick={requestDelete}
           >
             <Trash2 aria-hidden strokeWidth={1.5} />
-            Eliminar contacto
+            Eliminar
           </Button>
         }
         title={
