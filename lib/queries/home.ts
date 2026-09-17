@@ -1,6 +1,7 @@
 import { formatInTimeZone } from "date-fns-tz";
 import { createClient } from "@/lib/supabase/server";
 import { APP_TIMEZONE } from "@/lib/dates";
+import { listGoogleEvents } from "@/lib/google/calendar";
 import type { ProjectStatusKey } from "@/lib/queries/projects";
 
 function todayISO(): string {
@@ -215,8 +216,8 @@ export type HomeTodayTask = {
 export type HomeToday = {
   payments: HomeTodayPayment[];
   tasks: HomeTodayTask[];
-  // Fase 10: eventos de hoy del calendario de Google. Vacío mientras no haya
-  // conexión (la sección "Eventos de hoy" se oculta).
+  // 10.6: eventos de hoy del calendario principal de Google. Vacío mientras
+  // no haya conexión (la sección "Eventos de hoy" se oculta).
   calendarEvents: { id: string; title: string }[];
 };
 
@@ -224,7 +225,12 @@ export async function getTodayPanel(): Promise<HomeToday> {
   const supabase = await createClient();
   const today = todayISO();
 
-  const [paymentsResult, tasksResult, projectsResult] = await Promise.all([
+  const [
+    paymentsResult,
+    tasksResult,
+    projectsResult,
+    { data: { user } },
+  ] = await Promise.all([
     supabase
       .from("v_payments")
       .select("id,amount,due_date,client_business_name,project_id")
@@ -237,6 +243,7 @@ export async function getTodayPanel(): Promise<HomeToday> {
       .eq("status", "doing")
       .order("position", { ascending: true }),
     supabase.from("projects").select("id,name"),
+    supabase.auth.getUser(),
   ]);
 
   if (paymentsResult.error) throw new Error(paymentsResult.error.message);
@@ -268,5 +275,22 @@ export async function getTodayPanel(): Promise<HomeToday> {
     project_name: projectNames.get(row.project_id) ?? "",
   }));
 
-  return { payments, tasks, calendarEvents: [] };
+  // Fase 10 (10.6 / D-14): eventos de hoy del calendario principal de
+  // Google. Los del calendario de Cobros se excluyen porque los cobros ya
+  // están en la sección "Cobros" con sus datos internos; sin conexión la
+  // lista queda vacía y la sección se oculta.
+  let calendarEvents: { id: string; title: string }[] = [];
+  if (user) {
+    const google = await listGoogleEvents(user.id, today, today);
+    calendarEvents = google.events
+      .filter((event) => event.source === "principal")
+      .filter((event) => {
+        const startDay = event.start.slice(0, 10);
+        const endDay = event.end.slice(0, 10);
+        return startDay <= today && endDay >= today;
+      })
+      .map((event) => ({ id: event.id, title: event.title }));
+  }
+
+  return { payments, tasks, calendarEvents };
 }

@@ -5,6 +5,7 @@ import type { z } from "zod";
 import { z as zod } from "zod";
 import { formatInTimeZone } from "date-fns-tz";
 import { createClient } from "@/lib/supabase/server";
+import { removePaymentEvent, syncPayment } from "@/lib/google/calendar";
 import { APP_TIMEZONE } from "@/lib/dates";
 
 const uuidSchema = zod.string().uuid();
@@ -83,6 +84,23 @@ export async function generatePaymentPlan(
     (paidRows ?? []).map((row) => Number(row.seq)),
   );
 
+  // 10.5 "Pago borrado": el evento de Google de cada fila no pagada que va
+  // a desaparecer se borra ANTES de borrar la fila. Mejor esfuerzo: nunca
+  // bloquea el regenerado del plan.
+  const { data: unpaidRows } = await supabase
+    .from("payments")
+    .select("id,google_event_id")
+    .eq("project_id", projectId)
+    .is("paid_at", null)
+    .not("google_event_id", "is", null);
+  for (const row of unpaidRows ?? []) {
+    try {
+      await removePaymentEvent(row.id);
+    } catch {
+      // La sincronización es un extra (10.5): nunca propaga el error.
+    }
+  }
+
   // Borrado de las filas no pagadas (6.3: nunca borra una fila ya pagada).
   const { error: deleteError } = await supabase
     .from("payments")
@@ -112,10 +130,21 @@ export async function generatePaymentPlan(
     };
   });
 
-  const { error: insertError } = await supabase
+  const { data: inserted, error: insertError } = await supabase
     .from("payments")
-    .insert(toInsert);
+    .insert(toInsert)
+    .select("id");
   if (insertError) return { ok: false, error: insertError.message };
+
+  // 10.5: un evento por vencimiento tras guardar el plan, envuelto en
+  // try/catch que nunca propaga el error al usuario.
+  for (const row of inserted ?? []) {
+    try {
+      await syncPayment(row.id);
+    } catch {
+      // La sincronización es un extra (10.5): nunca propaga el error.
+    }
+  }
 
   revalidateProjectPayments(projectId);
   return { ok: true };
@@ -170,6 +199,13 @@ export async function upsertPayment(
       .eq("id", id);
     if (error) return { ok: false, error: error.message };
 
+    // 10.5: sincronización tras la escritura, nunca propaga el error.
+    try {
+      await syncPayment(id);
+    } catch {
+      // La sincronización es un extra.
+    }
+
     revalidateProjectPayments(existing.project_id);
     return { ok: true };
   }
@@ -187,17 +223,30 @@ export async function upsertPayment(
     nextSeq = (last?.seq ?? 0) + 1;
   }
 
-  const { error } = await supabase.from("payments").insert({
-    project_id,
-    seq: nextSeq,
-    label: label || null,
-    amount,
-    due_date,
-    paid_at: paid_at ?? null,
-    method: method || null,
-    sync_state: "pendiente",
-  });
+  const { data: inserted, error } = await supabase
+    .from("payments")
+    .insert({
+      project_id,
+      seq: nextSeq,
+      label: label || null,
+      amount,
+      due_date,
+      paid_at: paid_at ?? null,
+      method: method || null,
+      sync_state: "pendiente",
+    })
+    .select("id")
+    .maybeSingle();
   if (error) return { ok: false, error: error.message };
+
+  // 10.5: sincronización tras la escritura, nunca propaga el error.
+  if (inserted) {
+    try {
+      await syncPayment(inserted.id);
+    } catch {
+      // La sincronización es un extra.
+    }
+  }
 
   revalidateProjectPayments(project_id);
   return { ok: true };
@@ -214,7 +263,7 @@ export async function deletePayment(
   const supabase = await createClient();
   const { data: payment, error: selectError } = await supabase
     .from("payments")
-    .select("project_id,paid_at")
+    .select("project_id,paid_at,google_event_id")
     .eq("id", paymentId)
     .maybeSingle();
   if (selectError) return { ok: false, error: selectError.message };
@@ -224,6 +273,14 @@ export async function deletePayment(
       ok: false,
       error: "No se puede eliminar un pago ya cobrado.",
     };
+  }
+
+  // 10.5 "Pago borrado": el evento se borra de Google ANTES de borrar la
+  // fila. Envuelto en try/catch que nunca propaga el error al usuario.
+  try {
+    await removePaymentEvent(paymentId);
+  } catch {
+    // La sincronización es un extra.
   }
 
   const { error } = await supabase
@@ -260,6 +317,13 @@ export async function markPaid(
     .eq("id", paymentId);
   if (error) return { ok: false, error: error.message };
 
+  // 10.5: cobrado → su evento se borra del calendario.
+  try {
+    await syncPayment(paymentId);
+  } catch {
+    // La sincronización es un extra.
+  }
+
   revalidateProjectPayments(payment.project_id);
   return { ok: true };
 }
@@ -286,6 +350,13 @@ export async function markUnpaid(
     .update({ paid_at: null, sync_state: "pendiente" })
     .eq("id", paymentId);
   if (error) return { ok: false, error: error.message };
+
+  // 10.5: vuelve a estar pendiente → se crea de nuevo su evento.
+  try {
+    await syncPayment(paymentId);
+  } catch {
+    // La sincronización es un extra.
+  }
 
   revalidateProjectPayments(payment.project_id);
   return { ok: true };
